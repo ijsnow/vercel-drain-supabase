@@ -1,0 +1,25 @@
+{
+  "name": "@ijsnow/vercel-drain-supabase",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./verify": "./verify.ts",
+    "./parse": "./parse.ts",
+    "./schema": "./schema.ts",
+    "./normalize": "./normalize.ts",
+    "./sinks/postgres": "./sinks/postgres.ts",
+    "./sinks/storage": "./sinks/storage.ts"
+  },
+  "imports": {
+    "zod": "npm:zod@^3.25.76",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.47.10"
+  },
+  "publish": {
+    "exclude": ["__tests__/"]
+  },
+  "tasks": {
+    "test": "deno test --allow-read",
+    "check": "deno check mod.ts verify.ts parse.ts schema.ts normalize.ts sinks/postgres.ts sinks/storage.ts"
+  }
+}
