@@ -3,9 +3,8 @@ import {
   createDrainHandler,
   type DrainBatch,
   type Sink,
-  VERIFY_HEADER,
-} from "../mod.ts";
-import { signBody } from "../verify.ts";
+} from "../handler.ts";
+import { signBody, VERIFY_HEADER } from "../verify.ts";
 
 const SECRET = "test-drain-secret";
 const VERIFY_CODE = "verify-code-1234";

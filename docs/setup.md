@@ -13,12 +13,20 @@ From a clone of this repo, linked to your project
 supabase db push
 ```
 
-This creates the partitioned `vercel_logs` table, the maintenance
-functions, and a daily pg_cron job that creates tomorrow's partition and
-drops partitions older than 14 days. To change retention, edit the number
-in `supabase/migrations/0003_retention_cron.sql` and re-run the
-`cron.schedule` statement in the SQL editor — scheduling under the same
-job name replaces the job.
+This creates the `drain` schema, the partitioned `drain.vercel_logs`
+table, the maintenance functions, and a daily pg_cron job that creates
+tomorrow's partition and drops partitions older than 14 days. To change
+retention, edit the number in `supabase/migrations/0003_retention_cron.sql`
+and re-run the `cron.schedule` statement in the SQL editor — scheduling
+under the same job name replaces the job.
+
+The `drain` schema is intentionally **not** added to PostgREST's
+exposed-schemas list, so the logs are unreachable through the REST API.
+Don't add it. Ingestion uses a direct database connection
+(`SUPABASE_DB_URL`, injected automatically), and you read the logs via the
+SQL editor — neither needs the schema exposed. Make sure the `pg_cron`
+extension is enabled (Dashboard → Database → Extensions); without it the
+retention job never runs and the table grows forever.
 
 ## 2. Deploy the edge function
 
@@ -74,43 +82,19 @@ Objects land under `vercel-drain/<YYYY-MM-DD>/<sha256-of-body>.ndjson.gz`.
 The key is derived from the body hash, so redelivered batches overwrite
 rather than duplicate.
 
-## 5. Wire the correlation loop
-
-Ingesting logs is half the value; the joins in
-[queries.md](./queries.md) need your app to participate. Install the
-companion package in your Vercel app:
-
-```sh
-npm install vercel-drain-correlate
-```
-
-Then (tRPC example — see `examples/tanstack-start-trpc/`):
-
-```ts
-import { correlateMiddleware } from "vercel-drain-correlate/trpc";
-
-const correlated = t.procedure.use(t.middleware(correlateMiddleware({
-  getHeaders: (ctx) => ctx.headers,
-  getIdentity: (ctx) => ({ userId: ctx.session?.userId ?? null }),
-})));
-```
-
-and stamp `request_id` onto rows you write:
-
-```ts
-await db.insert(payments).values({ ...payment, request_id: ctx.requestId });
-```
-
-## 6. Check that data is flowing
+## 5. Check that data is flowing
 
 Trigger some traffic, then in the Supabase SQL editor:
 
 ```sql
 select "timestamp", source, level, status_code, path, request_id
-from vercel_logs
+from drain.vercel_logs
 order by "timestamp" desc
 limit 20;
 ```
+
+That's it — logs are landing and retained. See [queries.md](./queries.md)
+for incident-search recipes.
 
 ## Troubleshooting
 
@@ -119,5 +103,5 @@ limit 20;
 | Drain verification fails | `VERCEL_VERIFY_CODE` not set, or function deployed with `verify_jwt` enabled |
 | Every delivery is 401 with `invalid signature` | `VERCEL_DRAIN_SECRET` does not match the drain's custom secret |
 | Every delivery is 401 and never reaches the function logs | `verify_jwt` still on — redeploy with this repo's `config.toml` |
-| Deliveries are 500 with `sink write failed` | Check function logs; usually the migrations have not been applied, or a partition is missing (run `select vercel_logs_maintenance(14)`) |
-| Rows appear but `request_id` joins find nothing | The correlate loop is not wired; see step 5 |
+| Deliveries are 500 with `sink write failed` | Check function logs; usually the migrations have not been applied, or a partition is missing (run `select drain.vercel_logs_maintenance(14)`) |
+| Deliveries are 500 and logs mention a connection or auth error | The Postgres sink can't reach the database — check `SUPABASE_DB_URL`, or set `DRAIN_DB_URL` to the transaction-mode pooler string (port 6543) |

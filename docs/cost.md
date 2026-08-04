@@ -45,9 +45,7 @@ The drain export fee dominates. Which leads to:
 2. **Use drain sampling rules** (available in the Vercel drain config)
    for high-volume, low-value sources before paying to ingest them.
    Sample `edge` request logs; never sample `lambda` errors.
-3. **Keep correlate lines terse.** One compact JSON line per request is
-   the design. Do not log request bodies through the loop.
-4. **Tune retention to your incident-response window**, not to nostalgia.
+3. **Tune retention to your incident-response window**, not to nostalgia.
    Fourteen days in Postgres plus a gzipped archive answers both "what is
    broken now" and "what happened in March" at close to the minimum
    possible price.

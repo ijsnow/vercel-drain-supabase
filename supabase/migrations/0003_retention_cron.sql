@@ -20,10 +20,10 @@ begin
     perform cron.schedule(
       'vercel-logs-maintenance',
       '7 0 * * *',
-      $cmd$ select public.vercel_logs_maintenance(retention_days => 14) $cmd$
+      $cmd$ select drain.vercel_logs_maintenance(retention_days => 14) $cmd$
     );
   else
-    raise notice 'pg_cron is not available; schedule public.vercel_logs_maintenance(14) with your own scheduler';
+    raise notice 'pg_cron is not available; schedule drain.vercel_logs_maintenance(14) with your own scheduler';
   end if;
 end;
 $do$;

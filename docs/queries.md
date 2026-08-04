@@ -1,170 +1,134 @@
 # Query recipes
 
-These queries are the reason the logs live in your database instead of a
-logging vendor: every one of them joins `vercel_logs` against your own
-application tables, which no external destination can do.
+The point of keeping logs in Postgres is that weeks after an incident,
+when Vercel's own retention has aged them out, they're still here and
+answerable with plain SQL. Run everything in the Supabase SQL editor (or
+ask Claude to run it over the Supabase MCP) — both use a direct database
+connection, so they reach the `drain` schema even though it is not
+exposed through the REST API.
 
-They assume the correlation loop from the README is in place:
+The table is `drain.vercel_logs`. To skip the schema prefix, run
+`set search_path = drain, public;` once at the top of your session, then
+query `vercel_logs` bare.
 
-1. Your app emits one structured line per request via the `correlate`
-   package. The line is JSON with a `vdc` marker, the Vercel request id,
-   and whatever identity the app knows (`userId`, `procedure`, ...). It
-   arrives back through the drain as an ordinary log row.
-2. Your app stamps `request_id` onto rows it writes (payments,
-   reservations, audit entries).
+Every recipe leads with a `"timestamp"` window — that's what makes them
+cheap (see [Notes](#notes-on-writing-your-own) at the bottom).
 
-The example application tables (`payments`, `reservations`, `sessions`,
-`users`) are stand-ins — substitute your own. Run everything in the
-Supabase SQL editor.
+## 1. What was erroring in a window
 
-## Setup: a view over the correlation lines
-
-The `correlate` package emits messages shaped like:
-
-```json
-{"vdc":1,"requestId":"dxb2k-1723478400100-8f3a21c9d4e0","procedure":"reservations.create","userId":"..."}
-```
-
-`JSON.stringify` writes keys in insertion order and `vdc` is always first,
-so the rows are cheap to find with a prefix match. Pull them into a view
-once and every recipe below gets `user_id` per request:
+The bread-and-butter incident query: errors in a time range, most recent
+first.
 
 ```sql
-create or replace view public.vercel_log_identity as
-select
-  l.request_id,
-  l."timestamp",
-  (l.message::jsonb) ->> 'userId'    as user_id,
-  (l.message::jsonb) ->> 'procedure' as procedure,
-  (l.message::jsonb) - 'vdc' - 'requestId' as identity
-from public.vercel_logs l
-where l.message like '{"vdc":1%'
-  and l.request_id is not null;
+select "timestamp", source, status_code, path, message
+from drain.vercel_logs
+where "timestamp" between '2026-03-14 09:00' and '2026-03-14 11:00'
+  and level in ('error', 'fatal')
+order by "timestamp" desc
+limit 200;
 ```
 
-## 1. Reconciliation: side effects with no domain row
+## 2. Error signatures, ranked
 
-"The logs say we charged the card; do we have the payment?" Requests that
-logged a successful charge but have no corresponding `payments` row —
-the bug class where an external side effect happened and the database
-write after it did not:
+Which failures dominated a window — group by the shape of the message so
+one incident doesn't scroll past as a thousand lines.
 
 ```sql
 select
-  l.request_id,
-  l."timestamp",
-  i.user_id,
-  l.path
-from public.vercel_logs l
-left join public.vercel_log_identity i using (request_id)
-left join public.payments p on p.request_id = l.request_id
-where l."timestamp" > now() - interval '1 day'
-  and l.message like '%charge.succeeded%'   -- your app's success marker
-  and p.id is null
-order by l."timestamp" desc;
+  status_code,
+  path,
+  count(*)                        as hits,
+  min("timestamp")                as first_seen,
+  max("timestamp")                as last_seen
+from drain.vercel_logs
+where "timestamp" > now() - interval '24 hours'
+  and level in ('error', 'fatal')
+group by status_code, path
+order by hits desc
+limit 30;
 ```
 
-## 2. Blast radius: one person or forty?
+## 3. Status-code breakdown over time
 
-During an incident, count distinct affected users for an error signature
-instead of guessing from raw log volume:
+Is the 5xx rate climbing? Buckets per minute, so you can see the shape of
+an incident start and recover.
 
 ```sql
 select
-  count(distinct i.user_id)                as affected_users,
-  count(*)                                 as failing_requests,
-  min(l."timestamp")                       as first_seen,
-  max(l."timestamp")                       as last_seen
-from public.vercel_logs l
-join public.vercel_log_identity i using (request_id)
-where l."timestamp" > now() - interval '2 hours'
-  and l.level = 'error'
-  and l.message like '%card_declined%';    -- the signature under investigation
-```
-
-Add `group by i.user_id` with a `having count(*) > 3` to find the users
-hit repeatedly — they are the ones to email.
-
-## 3. Errors by domain entity, not by UUID
-
-5xx counts grouped by a human-readable name from your own tables, rather
-than by an opaque id embedded in the path:
-
-```sql
-select
-  u.email                        as user_email,
-  count(*)                       as errors,
-  array_agg(distinct l.path)     as paths
-from public.vercel_logs l
-join public.vercel_log_identity i using (request_id)
-join public.users u on u.id = i.user_id::uuid
-where l."timestamp" > now() - interval '1 day'
-  and l.status_code >= 500
-group by u.email
-order by errors desc
-limit 20;
-```
-
-The same shape works for any entity: join `reservations` through
-`request_id` and group by property name, join `organizations` and group
-by plan tier, and so on.
-
-## 4. Background job correlation
-
-"Is the nightly sync what makes the API slow?" Latency-ish signal (error
-and warning rates per minute) aligned against your own job-run table,
-filtered to requests that touched records the job was updating:
-
-```sql
-select
-  date_trunc('minute', l."timestamp")                 as minute,
-  count(*)                                            as requests,
-  count(*) filter (where l.status_code >= 500)        as errors,
-  bool_or(j.id is not null)                           as job_running
-from public.vercel_logs l
-left join public.job_runs j
-  on l."timestamp" between j.started_at and j.finished_at
-  and j.job_name = 'nightly-sync'
-where l."timestamp" > now() - interval '6 hours'
-  and l.source in ('lambda', 'edge')
+  date_trunc('minute', "timestamp")               as minute,
+  count(*)                                        as requests,
+  count(*) filter (where status_code >= 500)      as errors_5xx,
+  count(*) filter (where status_code between 400 and 499) as errors_4xx
+from drain.vercel_logs
+where "timestamp" > now() - interval '3 hours'
+  and source in ('lambda', 'edge')
 group by 1
 order by 1;
 ```
 
-If you log durations in your correlate line (`{"durationMs": 1832}`),
-swap the error count for
-`percentile_cont(0.95) within group (order by (i.identity->>'durationMs')::int)`.
+## 4. Everything about one request
 
-## 5. Funnel: traffic versus outcomes
-
-The product question, not the debugging one: how many requests hit the
-booking page versus how many reservations exist for the same window?
+You have a `request_id` (from a Vercel error, a support ticket, or a row
+in your own tables). Pull its full timeline across build/edge/lambda:
 
 ```sql
-with traffic as (
-  select date_trunc('hour', "timestamp") as hour, count(*) as page_hits
-  from public.vercel_logs
-  where "timestamp" > now() - interval '7 days'
-    and path = '/book'
-    and source in ('lambda', 'edge')
-    and status_code < 400
-  group by 1
-),
-outcomes as (
-  select date_trunc('hour', created_at) as hour, count(*) as reservations
-  from public.reservations
-  where created_at > now() - interval '7 days'
-  group by 1
-)
-select
-  t.hour,
-  t.page_hits,
-  coalesce(o.reservations, 0) as reservations,
-  round(100.0 * coalesce(o.reservations, 0) / t.page_hits, 1) as conversion_pct
-from traffic t
-left join outcomes o using (hour)
-order by t.hour;
+select "timestamp", source, level, status_code, path, message, raw
+from drain.vercel_logs
+where request_id = 'iad1::abc-1741900000000-deadbeef'
+order by "timestamp";
 ```
+
+## 5. Search a specific path or route
+
+Everything that hit an endpoint in a window, e.g. reproducing a checkout
+failure:
+
+```sql
+select "timestamp", level, status_code, message
+from drain.vercel_logs
+where "timestamp" > now() - interval '2 days'
+  and path like '/api/checkout%'
+  and status_code >= 400
+order by "timestamp" desc;
+```
+
+## 6. Digging into fields that aren't hot columns
+
+Anything not extracted to a real column is still in `raw`. Client IP,
+cache status, region, and the full proxy object are all reachable:
+
+```sql
+select
+  "timestamp",
+  path,
+  raw->'proxy'->>'clientIp'    as client_ip,
+  raw->'proxy'->>'vercelCache' as cache,
+  raw->'proxy'->>'region'      as region
+from drain.vercel_logs
+where "timestamp" > now() - interval '6 hours'
+  and status_code = 429            -- e.g. who's getting rate-limited
+order by "timestamp" desc
+limit 100;
+```
+
+## Optional: joining logs to your own tables
+
+Every row carries Vercel's `request_id` (from the `x-vercel-id` header).
+If you also stamp that same id onto rows your app writes — add a
+`request_id text` column and set it from the incoming request's
+`x-vercel-id` header — then log lines and domain rows join directly:
+
+```sql
+select l."timestamp", l.status_code, l.path, r.id as reservation_id
+from drain.vercel_logs l
+join reservations r on r.request_id = l.request_id
+where l."timestamp" > now() - interval '1 day'
+  and l.status_code >= 500;
+```
+
+This is opt-in and app-specific; nothing in this repo sets it up for you.
+Skip it unless you have a concrete need to tie a specific log line to a
+specific row.
 
 ## Notes on writing your own
 

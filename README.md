@@ -1,7 +1,8 @@
 # vercel-drain-supabase
 
-Receive Vercel log drain deliveries into your own Supabase Postgres, in a
-shape that can be joined against your application tables.
+Receive Vercel log drain deliveries into your own Supabase Postgres, so
+your logs outlive Vercel's short retention window and stay queryable with
+plain SQL.
 
 ```
 Vercel drain  ──signed ndjson──▶  Supabase edge function
@@ -11,44 +12,48 @@ Vercel drain  ──signed ndjson──▶  Supabase edge function
                                     ├──▶  logs table (daily partitions)
                                     └──▶  storage archive (optional, gzipped)
 
-logs table  ──join on request_id──▶  application tables
+logs table  ──plain SQL──▶  incident search, weeks after the fact
 ```
 
 ## Why
 
-Vercel drains can forward logs to any HTTPS endpoint, but every turnkey
-destination (Axiom, Better Stack, Datadog, Logflare) lands the data
-somewhere your application database cannot reach. You can see *that*
-requests failed, but not *who* they failed for, without exporting from
-two systems and reconciling by hand.
+Vercel's runtime logs age out fast. The moment you actually want them —
+investigating an incident from two or three weeks ago — they're gone, and
+every turnkey drain destination (Axiom, Better Stack, Datadog, Logflare)
+is another vendor account someone has to hold, pay for, and remember
+exists.
 
-With the logs in your own Postgres, questions like these are single
-queries ([docs/queries.md](docs/queries.md) has the SQL):
+This keeps the logs in Postgres you already run, retained as long as you
+choose, and searchable with SQL you already know:
 
-1. **Reconciliation** — requests that logged a successful external side
-   effect but have no corresponding domain row.
-2. **Blast radius** — distinct affected users for an error signature:
-   one person or forty?
-3. **Errors by domain entity** — 5xx grouped by customer email, not by
-   opaque UUID in the path.
-4. **Background job correlation** — error rates aligned against your own
-   job-run table.
-5. **Funnel** — requests to a page versus rows created in the window.
+```sql
+select "timestamp", source, level, status_code, path, message
+from drain.vercel_logs
+where "timestamp" between '2026-03-01' and '2026-03-02'
+  and level = 'error'
+  and path like '/api/checkout%'
+order by "timestamp" desc;
+```
 
-A quieter benefit: teams running Vercel plus Supabase often have a
-non-technical client or owner, and every extra vendor is an account
-someone has to hold, pay for, and remember exists. This adds zero new
-services.
+The audience this is built for: a team running Vercel plus Supabase, often
+with a non-technical client or owner, where every extra vendor is a
+liability the next maintainer inherits. This adds **zero new services** —
+it reuses the Supabase project already in the stack.
 
 ## What this is not
 
 Guardrails, stated up front:
 
-- **No query UI or dashboard.** Use the Supabase SQL editor.
+- **No query UI or dashboard.** Use the Supabase SQL editor (or ask Claude
+  to query it over the Supabase MCP).
 - **No alerting or anomaly detection.**
-- **No Iceberg / Analytics Buckets ingestion.** Writing Iceberg from
-  Deno is not viable.
-- **No OTLP trace drains.** Logs only, in v1.
+- **No app-side correlation layer.** The logs carry Vercel's
+  `request_id`, so you *can* join them to your own tables if you ever
+  stamp that id onto your rows — but nothing here requires it, and there's
+  no companion package to install.
+- **No Iceberg / Analytics Buckets ingestion.** Writing Iceberg from Deno
+  is not viable.
+- **No OTLP trace drains.** Logs only.
 - **No hosted or multi-tenant version.** This is a template you run
   yourself.
 - **Not a general log aggregator.** It receives Vercel drains, nothing
@@ -56,28 +61,19 @@ Guardrails, stated up front:
 
 ## How it works
 
-Two small packages plus SQL you copy:
+Two things you copy into your own Supabase project — a self-contained
+edge function and the migrations it writes to:
 
-| Piece | Runtime | Published as |
+| Piece | Runtime | How you use it |
 | --- | --- | --- |
-| [`packages/drain`](packages/drain) | Deno, inside the edge function | JSR (`@ijsnow/vercel-drain-supabase`) |
-| [`packages/correlate`](packages/correlate) | Node, inside your Vercel app | npm (`vercel-drain-correlate`) |
-| [`supabase/migrations`](supabase/migrations) | Postgres | copied, the way Supabase migrations work |
+| [`supabase/functions/vercel-drain`](supabase/functions/vercel-drain) | Deno edge function | copy the folder, `supabase functions deploy` |
+| [`supabase/migrations`](supabase/migrations) | Postgres | `supabase db push`, the way Supabase migrations work |
 
-The correlation loop is the point of the whole project:
-
-1. Your app emits a structured line per request containing the Vercel
-   request id plus whatever domain identity it knows (user id, tenant
-   id, tRPC procedure). `correlate` makes this one line of setup.
-2. That line arrives back through the drain and lands in the logs table.
-3. Your app also stamps `request_id` onto rows it writes (payments,
-   reservations, audit).
-4. Queries join the two on `request_id`.
-
-Without steps 1 and 3, the "join" degrades to matching timestamps and
-paths, which is guesswork. The join key is Vercel's own request id (from
-the `x-vercel-id` header), because it is already present in every drain
-log row.
+The function verifies each delivery's HMAC signature, parses the NDJSON
+batch, normalizes it, and does one multi-row write over a direct Postgres
+connection into a partitioned `drain.vercel_logs` table. That's the whole
+pipeline. Everything the function needs lives in its own folder — nothing
+to publish or install.
 
 **[Setup guide →](docs/setup.md)** · **[Query recipes →](docs/queries.md)** · **[Cost notes →](docs/cost.md)**
 
@@ -90,23 +86,31 @@ carry several hundred to a thousand lines. Parse, normalize, one
 multi-row write per sink. No per-row awaits, no enrichment calls, no
 outbound HTTP.
 
-### supabase-js, not a direct Postgres connection
+### Unexposed `drain` schema, written over a direct connection
 
-The decision to defend loudest. Going through PostgREST with the service
-role key means connection pooling never becomes your problem, and
-idempotency is one call:
+The table lives in a `drain` schema that is **not** in PostgREST's
+exposed-schemas list, so it is unreachable through the REST API — no
+anon, authenticated, or service role can touch it over HTTPS. The edge
+function writes to it over a **direct Postgres connection** (postgres.js)
+instead of supabase-js.
 
-```ts
-await supabase.from("vercel_logs").upsert(rows, {
-  onConflict: "timestamp,id",
-  ignoreDuplicates: true,
-});
-```
+Two reasons this beats going through PostgREST:
 
-postgres.js with `COPY` exists as an advanced option for high volume,
-but it is deliberately not the default. A template that opens raw
-connections from an edge function is how you get issues titled "max
-client connections reached."
+1. **True isolation.** These are operational logs and can carry sensitive
+   data (paths, the whole `proxy` object). Keeping the schema off the API
+   surface means a leaked service-role key or a stray RLS policy can't
+   expose them remotely.
+2. **Ingestion doesn't depend on PostgREST.** If PostgREST is unhealthy
+   (its schema cache can wedge — `PGRST002`), a PostgREST-based sink
+   returns 500 and logs back up. A direct connection keeps writing —
+   which is exactly when, during an incident, you most want logs landing.
+
+The one hazard of direct connections from an edge function — "max client
+connections reached" — is avoided by connecting through Supabase's
+**transaction-mode pooler** (Supavisor), which is built for serverless.
+The sink uses `prepare: false` (required by the pooler) and `max: 1`.
+Reads are by humans over the SQL editor / a direct connection, so nothing
+legitimate needs the REST API here.
 
 ### Idempotency is mandatory
 
@@ -124,6 +128,11 @@ on append-only time-ordered data), btree on `request_id`. A pg_cron job
 creates tomorrow's partition and drops partitions past the retention
 window (default 14 days). Dropping a partition is instant; deleting
 millions of rows creates a vacuum problem.
+
+A **DEFAULT partition** sits underneath as a safety net: if the cron job
+lags or stops, rows for a not-yet-created day land there instead of
+failing, so a dead cron degrades retention rather than breaking
+ingestion.
 
 ### Hot columns plus jsonb
 
@@ -156,8 +165,10 @@ version:
 | --- | --- | --- |
 | `VERCEL_DRAIN_SECRET` | yes | HMAC secret from the drain configuration |
 | `VERCEL_VERIFY_CODE` | for setup | `x-vercel-verify` value shown during drain creation |
-| `SUPABASE_URL` | auto | Injected by Supabase |
-| `SUPABASE_SERVICE_ROLE_KEY` | auto | Injected by Supabase |
+| `SUPABASE_DB_URL` | auto | Postgres connection string, injected by Supabase. The Postgres sink writes over this. |
+| `DRAIN_DB_URL` | no | Override for `SUPABASE_DB_URL` — set to the transaction-mode pooler string (port 6543) if the injected value isn't already pooled |
+| `SUPABASE_URL` | archive only | Injected by Supabase; needed only when the Storage archive is enabled |
+| `SUPABASE_SERVICE_ROLE_KEY` | archive only | Injected by Supabase; needed only when the Storage archive is enabled |
 | `DRAIN_ARCHIVE_BUCKET` | no | Private Storage bucket; setting it enables the gzip archive sink |
 
 Retention (default 14 days) is configured in SQL, where the cron job
@@ -166,27 +177,35 @@ lives — see `supabase/migrations/0003_retention_cron.sql`.
 ## Repo layout
 
 ```
-packages/
-  drain/          # JSR, Deno-first, runs in the edge function
-  correlate/      # npm, runs in your Vercel app
 supabase/
-  migrations/     # partitioned table, maintenance, retention cron
   functions/
-    vercel-drain/ # thin wrapper around packages/drain
-  tests/          # SQL assertions, run against Postgres in CI
+    vercel-drain/     # the whole function — copy this folder and deploy
+      index.ts        # entrypoint: Deno.serve(handlerFromEnv(...))
+      handler.ts      # verify → parse → normalize → sinks
+      verify.ts parse.ts normalize.ts schema.ts
+      sinks/          # postgres (direct connection), storage (archive)
+      deno.json       # import map
+      tests/          # deno unit tests + fixtures
+  migrations/         # partitioned table, maintenance, retention cron
+  tests/              # SQL assertions, run against Postgres in CI
+scripts/
+  smoke.ts            # local end-to-end: signs a delivery, asserts 200/401
 docs/
   setup.md  queries.md  cost.md
-examples/
-  tanstack-start-trpc/
 ```
 
 ## Development
 
 ```sh
-cd packages/drain && deno task test        # handler, parsing, signatures
-cd packages/correlate && npm install && npm test
+cd supabase/functions/vercel-drain && deno test --allow-read   # handler, parsing, signatures
 # migrations: see supabase/tests/migrations_test.sql header
+# local end-to-end (needs `supabase start` + the function served):
+deno run --allow-read --allow-net --allow-env scripts/smoke.ts
 ```
+
+`scripts/smoke.ts` fires a correctly-signed delivery at a running
+function and asserts 200 + a bad signature gets 401 — the header comment
+lists the two setup commands.
 
 ## License
 

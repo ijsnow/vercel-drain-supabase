@@ -1,0 +1,8 @@
+{
+  "lock": false,
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.47.10",
+    "zod": "npm:zod@^3.25.76",
+    "postgres": "npm:postgres@^3.4.5"
+  }
+}

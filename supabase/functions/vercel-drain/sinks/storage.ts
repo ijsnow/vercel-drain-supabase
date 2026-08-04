@@ -8,7 +8,7 @@
  * delivery overwrites the same object instead of duplicating it.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { DrainBatch, Sink } from "../mod.ts";
+import type { DrainBatch, Sink } from "../handler.ts";
 
 export interface StorageSinkOptions {
   /** Supabase project URL. */

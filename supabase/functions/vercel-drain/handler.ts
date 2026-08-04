@@ -8,8 +8,10 @@
  * per sink. No per-row awaits, no enrichment, no outbound HTTP beyond
  * the sink writes themselves.
  *
+ * `index.ts` wires this to the runtime:
+ *
  * ```ts
- * import { handlerFromEnv } from "@ijsnow/vercel-drain-supabase";
+ * import { handlerFromEnv } from "./handler.ts";
  * Deno.serve(handlerFromEnv(Deno.env.toObject()));
  * ```
  */
@@ -18,19 +20,6 @@ import { parseDrainBody } from "./parse.ts";
 import { type LogRow, normalizeBatch } from "./normalize.ts";
 import { postgresSink } from "./sinks/postgres.ts";
 import { storageSink } from "./sinks/storage.ts";
-
-export { SIGNATURE_HEADER, VERIFY_HEADER } from "./verify.ts";
-export { signBody, verifySignature } from "./verify.ts";
-export { parseDrainBody, type ParseResult } from "./parse.ts";
-export {
-  type LogRow,
-  normalizeBatch,
-  normalizeEvent,
-  type NormalizeResult,
-} from "./normalize.ts";
-export { logEventSchema, type VercelLogEvent } from "./schema.ts";
-export { postgresSink, type PostgresSinkOptions } from "./sinks/postgres.ts";
-export { storageSink, type StorageSinkOptions } from "./sinks/storage.ts";
 
 /** One delivery, after parsing and normalization. */
 export interface DrainBatch {
@@ -164,8 +153,12 @@ export function createDrainHandler(
  *
  * - `VERCEL_DRAIN_SECRET` (required) — HMAC secret from the drain config
  * - `VERCEL_VERIFY_CODE` — `x-vercel-verify` value
- * - `SUPABASE_URL` (required) — injected automatically on Supabase
- * - `SUPABASE_SERVICE_ROLE_KEY` (required) — injected automatically
+ * - `SUPABASE_DB_URL` (required) — Postgres connection string, injected
+ *   automatically on Supabase. Override with `DRAIN_DB_URL` (e.g. to force
+ *   the transaction-mode pooler). The Postgres sink writes over this.
+ * - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — only required when
+ *   `DRAIN_ARCHIVE_BUCKET` is set; the Storage archive still goes through
+ *   the Storage API, not the direct connection.
  * - `DRAIN_ARCHIVE_BUCKET` — optional, enables the Storage archive sink
  */
 export function handlerFromEnv(
@@ -177,12 +170,15 @@ export function handlerFromEnv(
     return value;
   };
 
-  const url = need("SUPABASE_URL");
-  const serviceRoleKey = need("SUPABASE_SERVICE_ROLE_KEY");
-  const sinks: Sink[] = [postgresSink({ url, serviceRoleKey })];
+  const connectionString = env.DRAIN_DB_URL ?? need("SUPABASE_DB_URL");
+  const sinks: Sink[] = [postgresSink({ connectionString })];
   if (env.DRAIN_ARCHIVE_BUCKET) {
     sinks.push(
-      storageSink({ url, serviceRoleKey, bucket: env.DRAIN_ARCHIVE_BUCKET }),
+      storageSink({
+        url: need("SUPABASE_URL"),
+        serviceRoleKey: need("SUPABASE_SERVICE_ROLE_KEY"),
+        bucket: env.DRAIN_ARCHIVE_BUCKET,
+      }),
     );
   }
 
