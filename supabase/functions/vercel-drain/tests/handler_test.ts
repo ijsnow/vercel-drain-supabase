@@ -1,9 +1,5 @@
 import { assert, assertEquals } from "./asserts.ts";
-import {
-  createDrainHandler,
-  type DrainBatch,
-  type Sink,
-} from "../handler.ts";
+import { createDrainHandler, type DrainBatch, type Sink } from "../handler.ts";
 import { signBody, VERIFY_HEADER } from "../verify.ts";
 
 const SECRET = "test-drain-secret";

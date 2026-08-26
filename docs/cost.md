@@ -7,7 +7,7 @@ pages before trusting the arithmetic.
 
 | Meter | Rate | Notes |
 | --- | --- | --- |
-| Vercel drain export | $0.50 / GB | Charged by Vercel for every GB the drain delivers, regardless of destination. You pay this with any drain vendor too. |
+| Vercel drain export | $0.50 / GB | Charged by Vercel for every GB the drain delivers, regardless of destination. You pay this with any drain vendor too. Billed on the *uncompressed* JSON serialization, so compressing in transit or at rest does not reduce it. |
 | Supabase database disk | ~$0.125 / GB / month | Past the 8 GB included on Pro. This is the expensive place to keep logs. |
 | Supabase file storage | ~$0.021 / GB / month | Roughly 6x cheaper than database disk, and the archive is gzipped on top of that. |
 
@@ -42,9 +42,14 @@ The drain export fee dominates. Which leads to:
 1. **Exclude the `static` source** in the drain configuration. Asset
    requests are high-volume and low-information; paying $0.50/GB to
    record cache hits on JS chunks is the classic mistake.
-2. **Use drain sampling rules** (available in the Vercel drain config)
-   for high-volume, low-value sources before paying to ingest them.
-   Sample `edge` request logs; never sample `lambda` errors.
+2. **Use drain sampling rules carefully**, or not at all. Rules match on
+   environment plus an optional request path prefix — not on source or
+   log level — and they are **deny-by-default**: once any rule exists,
+   a request matching no rule is dropped entirely. So you cannot "sample
+   `edge` but keep every `lambda` error"; you'd need a 100% rule for the
+   paths you care about and a low-percentage rule for the noisy ones.
+   With no rules at all, the drain forwards 100%
+   ([docs](https://vercel.com/docs/drains/using-drains)).
 3. **Tune retention to your incident-response window**, not to nostalgia.
    Fourteen days in Postgres plus a gzipped archive answers both "what is
    broken now" and "what happened in March" at close to the minimum

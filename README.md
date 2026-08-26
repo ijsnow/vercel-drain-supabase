@@ -77,6 +77,11 @@ to publish or install.
 
 **[Setup guide →](docs/setup.md)** · **[Query recipes →](docs/queries.md)** · **[Cost notes →](docs/cost.md)**
 
+Try it without deploying anything — `supabase start`, serve the function,
+fire a signed fixture at it, and read the rows back out of Postgres:
+[run it locally](docs/setup.md#part-1--run-it-locally). Note that Vercel
+drains require a **Pro or Enterprise** team; the local path doesn't.
+
 ## Design decisions
 
 ### The handler returns 200 fast and does exactly one write
@@ -165,8 +170,8 @@ version:
 | --- | --- | --- |
 | `VERCEL_DRAIN_SECRET` | yes | HMAC secret from the drain configuration |
 | `VERCEL_VERIFY_CODE` | for setup | `x-vercel-verify` value shown during drain creation |
-| `SUPABASE_DB_URL` | auto | Postgres connection string, injected by Supabase. The Postgres sink writes over this. |
-| `DRAIN_DB_URL` | no | Override for `SUPABASE_DB_URL` — set to the transaction-mode pooler string (port 6543) if the injected value isn't already pooled |
+| `SUPABASE_DB_URL` | auto | Injected by Supabase, and the sink's fallback — but it's the *direct* connection (port 5432), so relying on it exhausts `max_connections` under load. Prefer `DRAIN_DB_URL`. |
+| `DRAIN_DB_URL` | **in practice, yes** | Supavisor transaction-pooler string (port 6543), from Dashboard → Connect. Takes precedence over `SUPABASE_DB_URL`. Set this on any real deployment — see [setup.md](docs/setup.md#3-point-the-sink-at-the-transaction-pooler) |
 | `SUPABASE_URL` | archive only | Injected by Supabase; needed only when the Storage archive is enabled |
 | `SUPABASE_SERVICE_ROLE_KEY` | archive only | Injected by Supabase; needed only when the Storage archive is enabled |
 | `DRAIN_ARCHIVE_BUCKET` | no | Private Storage bucket; setting it enables the gzip archive sink |

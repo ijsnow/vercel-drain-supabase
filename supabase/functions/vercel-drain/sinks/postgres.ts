@@ -53,8 +53,18 @@ export function postgresSink(options: PostgresSinkOptions): Sink {
   // critical, and keeping it at 1 is the conservative choice against
   // connection exhaustion. Raise `max` if write throughput ever matters.
   // `prepare: false` is required by the transaction-mode pooler.
+  //
+  // idle_timeout matters more than it looks: edge isolates are recycled
+  // unpredictably, and without it every warm-but-idle isolate holds its
+  // connection open. On a small compute instance that exhausts
+  // max_connections ("remaining connection slots are reserved...") even
+  // at modest delivery rates. 20s is well under any pooler idle reaper.
   const sql: Sql = options.client ??
-    postgres(options.connectionString, { prepare: false, max: 1 });
+    postgres(options.connectionString, {
+      prepare: false,
+      max: 1,
+      idle_timeout: 20,
+    });
 
   return {
     name: "postgres",
@@ -65,7 +75,9 @@ export function postgresSink(options: PostgresSinkOptions): Sink {
       // sql() so they are quoted, not string-concatenated.
       try {
         await sql`
-          insert into ${sql(schema)}.${sql(table)} ${sql(batch.rows, ...COLUMNS)}
+          insert into ${sql(schema)}.${sql(table)} ${
+          sql(batch.rows, ...COLUMNS)
+        }
           on conflict ("timestamp", id) do nothing
         `;
       } catch (error) {
