@@ -5,37 +5,29 @@ on:
     branches: [main]
   pull_request:
 
+# No workflow_dispatch inputs and no ${{ github.event.* }} interpolation
+# anywhere below: every run: block is static text, so there is no path for
+# untrusted PR/issue content to reach a shell.
+
 jobs:
   drain:
     name: drain (deno)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/drain
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno task check
-      - run: deno task test
-      - run: deno fmt --check
-      - run: deno lint
-
-  correlate:
-    name: correlate (node)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/correlate
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install
-      - run: npm run build
-      - run: npm test
+      - name: Type check, test, format, lint
+        working-directory: supabase/functions/vercel-drain
+        run: |
+          deno check .
+          deno test --allow-read
+          deno fmt --check
+          deno lint
+      # smoke.ts lives at the repo root and imports the function's verify.ts,
+      # so it is checked separately from the function's own folder.
+      - run: deno check scripts/smoke.ts
 
   migrations:
     name: migrations (postgres)
