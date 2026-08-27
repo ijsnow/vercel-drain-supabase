@@ -1,0 +1,14 @@
+{
+  // Root config, for the tools in scripts/ only. The deployed function has
+  // its own deno.json (supabase/functions/vercel-drain/deno.json) which
+  // takes precedence for everything under that folder; these entries exist
+  // so `deno check`/`deno test` on scripts/ can resolve the same bare
+  // specifiers. Keep the versions here in sync with the function's map.
+  "lock": false,
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.8",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.47.10",
+    "zod": "npm:zod@^3.25.76",
+    "postgres": "npm:postgres@^3.4.5"
+  }
+}

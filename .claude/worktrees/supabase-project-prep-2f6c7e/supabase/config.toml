@@ -1,0 +1,14 @@
+# Supabase CLI configuration for this template. Only the parts that
+# matter for the drain are pinned here; `supabase init` merges the rest.
+
+project_id = "vercel-drain-supabase"
+
+# CRITICAL: Vercel cannot send a Supabase JWT, so the platform-level JWT
+# check must be off for this function. The drain's HMAC-SHA1 signature
+# (VERCEL_DRAIN_SECRET) is verified inside the handler instead — the
+# endpoint is not open, it is differently authenticated. If you skip this,
+# every delivery bounces with 401 and drain setup fails confusingly.
+[functions.vercel-drain]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/vercel-drain/index.ts"

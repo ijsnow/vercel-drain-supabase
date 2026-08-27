@@ -1,0 +1,5 @@
+{"id":"1723478600123400020","timestamp":1723478600123,"source":"lambda","message":"good line","requestId":"r9v5w-1723478600100-a7b9c1d3e5f7","statusCode":200}
+this line is not json at all
+{"id":"1723478600223400021","timestamp":1723478600223,"source":"lambda","message":"truncated line","requestId":
+{"message":"parses as json but has no id or timestamp"}
+{"id":"1723478600323400022","timestamp":1723478600323,"source":"lambda","message":"another good line","requestId":"s0w6x-1723478600300-b8c0d2e4f6a8","statusCode":200}

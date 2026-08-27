@@ -1,0 +1,40 @@
+[
+  {
+    "id": "1723478500123400010",
+    "timestamp": 1723478500123,
+    "source": "lambda",
+    "level": "warning",
+    "type": "stdout",
+    "message": "slow query: 1832ms",
+    "projectId": "prj_REDACTED0000000000000000",
+    "deploymentId": "dpl_REDACTED0000000000000000",
+    "host": "example-app.vercel.app",
+    "path": "/api/reports",
+    "requestId": "p7t3u-1723478500100-e5f7a9b1c3d5",
+    "statusCode": 200,
+    "environment": "production",
+    "executionRegion": "iad1"
+  },
+  {
+    "id": "1723478500223400011",
+    "timestamp": 1723478500223,
+    "source": "firewall",
+    "message": "blocked by firewall rule",
+    "projectId": "prj_REDACTED0000000000000000",
+    "host": "example-app.vercel.app",
+    "requestId": "q8u4v-1723478500200-f6a8b0c2d4e6",
+    "statusCode": 403,
+    "environment": "production",
+    "proxy": {
+      "timestamp": 1723478500198,
+      "method": "POST",
+      "scheme": "https",
+      "host": "example-app.vercel.app",
+      "path": "/wp-login.php",
+      "userAgent": ["curl/8.4.0"],
+      "statusCode": 403,
+      "clientIp": "192.0.2.199",
+      "region": "iad1"
+    }
+  }
+]
